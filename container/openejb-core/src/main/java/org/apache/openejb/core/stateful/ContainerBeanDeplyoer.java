@@ -41,8 +41,6 @@ import org.apache.openejb.util.Index;
 import org.apache.openejb.util.LogCategory;
 import org.apache.openejb.util.Logger;
 
-
-
 import javax.ejb.ConcurrentAccessTimeoutException;
 import javax.ejb.EJBAccessException;
 import javax.ejb.EJBContext;
@@ -76,7 +74,12 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 
 public class ContainerBeanDeplyoer {
-	public static Map<Method, MethodType> getLifecycleMethodsOfInterface(final BeanContext beanContext) {
+	
+	private static final Logger logger = Logger.getInstance(LogCategory.OPENEJB, "org.apache.openejb.util.resources");
+	
+	protected final Map<Object, BeanContext> deploymentsById = new HashMap<>();
+	
+	public Map<Method, MethodType> getLifecycleMethodsOfInterface(final BeanContext beanContext) {
         final Map<Method, MethodType> methods = new HashMap<>();
 
         try {
@@ -184,5 +187,90 @@ public class ContainerBeanDeplyoer {
         }
         return methods;
     }
+	
+	public synchronized void undeploy(final BeanContext beanContext) throws OpenEJBException {
+    	final BeanContainerData data = (BeanContainerData) beanContext.getContainerData();
 
+        final MBeanServer server = LocalMBeanServer.get();
+        for (final ObjectName objectName : data.jmxNames) {
+            try {
+                server.unregisterMBean(objectName);
+            } catch (final Exception e) {
+                logger.error("Unable to unregister MBean " + objectName);
+            }
+        }
+
+        deploymentsById.remove(beanContext.getDeploymentID());
+        beanContext.setContainer(null);
+        beanContext.setContainerData(null);
+        
+    }
+	
+	public synchronized void deploy(final BeanContext beanContext, SessionContext sessionContext) throws OpenEJBException {
+    	final Map<Method, MethodType> methods = getLifecycleMethodsOfInterface(beanContext);
+
+        deploymentsById.put(beanContext.getDeploymentID(), beanContext);
+        
+        final BeanContainerData data = new BeanContainerData(new Index<>(methods));
+        beanContext.setContainerData(data);
+
+        // Create stats interceptor
+        if (StatsInterceptor.isStatsActivated()) {
+            final StatsInterceptor stats = new StatsInterceptor(beanContext.getBeanClass());
+            beanContext.addFirstSystemInterceptor(stats);
+
+            final MBeanServer server = LocalMBeanServer.get();
+
+            final ObjectNameBuilder jmxName = new ObjectNameBuilder("openejb.management");
+            jmxName.set("J2EEServer", "openejb");
+            jmxName.set("J2EEApplication", null);
+            jmxName.set("EJBModule", beanContext.getModuleID());
+            jmxName.set("StatefulSessionBean", beanContext.getEjbName());
+            jmxName.set("j2eeType", "");
+            jmxName.set("name", beanContext.getEjbName());
+
+            // register the invocation stats interceptor
+            try {
+                final ObjectName objectName = jmxName.set("j2eeType", "Invocations").build();
+                if (server.isRegistered(objectName)) {
+                    server.unregisterMBean(objectName);
+                }
+                server.registerMBean(new ManagedMBean(stats), objectName);
+                data.jmxNames.add(objectName);
+            } catch (final Exception e) {
+                logger.error("Unable to register MBean ", e);
+            }
+        }
+
+        try {
+            final Context context = beanContext.getJndiEnc();
+            context.bind("comp/EJBContext", sessionContext);
+        } catch (final NamingException e) {
+            throw new OpenEJBException("Failed to bind EJBContext", e);
+        }
+
+        beanContext.set(EJBContext.class, sessionContext);
+    }
+	
+	public synchronized BeanContext[] getDeployedBeanContexts() {
+    	return deploymentsById.values().toArray(new BeanContext[deploymentsById.size()]);
+    }
+	
+	public synchronized BeanContext getDeployedBeanContextById(final Object deploymentID) {
+    	return deploymentsById.get(deploymentID);
+    }
+	
+	
+	public static class BeanContextFilter implements CacheFilter<Instance>, Serializable {
+        private final String id;
+
+        public BeanContextFilter(final String id) {
+            this.id = id;
+        }
+
+        @Override
+        public boolean matches(final Instance instance) {
+            return instance.beanContext.getId().equals(id);
+        }
+    }
 }

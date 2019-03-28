@@ -38,6 +38,8 @@ import org.apache.openejb.core.interceptor.InterceptorStack;
 import org.apache.openejb.core.security.AbstractSecurityService;
 import org.apache.openejb.core.stateful.Cache.CacheFilter;
 import org.apache.openejb.core.stateful.Cache.CacheListener;
+import org.apache.openejb.core.stateful.ContainerBeanDeplyoer.BeanContextFilter;
+import org.apache.openejb.core.stateful.BeanContainerData;
 import org.apache.openejb.core.stateful.ContainerBeanDeplyoer;
 import org.apache.openejb.core.transaction.BeanTransactionPolicy;
 import org.apache.openejb.core.transaction.BeanTransactionPolicy.SuspendedTransaction;
@@ -106,13 +108,13 @@ public class StatefulContainer implements RpcContainer {
     /**
      * Index used for getDeployments() and getDeploymentInfo(deploymentId).
      */
-    protected final Map<Object, BeanContext> deploymentsById = new HashMap<>();
-
+    
     protected final Cache<Object, Instance> cache;
     protected final LockFactory lockFactory;
     private final ConcurrentMap<Object, Instance> checkedOutInstances = new ConcurrentHashMap<>();
     private final SessionContext sessionContext;
     private final boolean preventExtendedEntityManagerSerialization;
+    private ContainerBeanDeplyoer containerBeanDeployer;
 
     public StatefulContainer(final Object id, final SecurityService securityService, final Cache<Object, Instance> cache) {
         this(id, securityService, cache, new Duration(-1, TimeUnit.MILLISECONDS), true, new DefaultLockFactory());
@@ -130,6 +132,7 @@ public class StatefulContainer implements RpcContainer {
         this.preventExtendedEntityManagerSerialization = preventExtendedEntityManagerSerialization;
         this.lockFactory = lockFactory;
         this.lockFactory.setContainer(this);
+        this.containerBeanDeployer = new ContainerBeanDeplyoer();
     }
 
     
@@ -155,12 +158,12 @@ public class StatefulContainer implements RpcContainer {
 
     @Override
     public synchronized BeanContext[] getBeanContexts() {
-        return deploymentsById.values().toArray(new BeanContext[deploymentsById.size()]);
+    	return containerBeanDeployer.getDeployedBeanContexts();
     }
 
     @Override
     public synchronized BeanContext getBeanContext(final Object deploymentID) {
-        return deploymentsById.get(deploymentID);
+    	return containerBeanDeployer.getDeployedBeanContextById(deploymentID);
     }
 
     @Override
@@ -175,90 +178,35 @@ public class StatefulContainer implements RpcContainer {
 
     @Override
     public synchronized void undeploy(final BeanContext beanContext) throws OpenEJBException {
-        final Data data = (Data) beanContext.getContainerData();
-
-        final MBeanServer server = LocalMBeanServer.get();
-        for (final ObjectName objectName : data.jmxNames) {
-            try {
-                server.unregisterMBean(objectName);
-            } catch (final Exception e) {
-                logger.error("Unable to unregister MBean " + objectName);
-            }
-        }
-
-        deploymentsById.remove(beanContext.getDeploymentID());
-        beanContext.setContainer(null);
-        beanContext.setContainerData(null);
-
-        if (isPassivable(beanContext)) {
+    	containerBeanDeployer.undeploy(beanContext);
+    	if (isPassivable(beanContext)) {
             cache.removeAll(new BeanContextFilter(beanContext.getId()));
         }
     }
 
     @Override
     public synchronized void deploy(final BeanContext beanContext) throws OpenEJBException {
-        final Map<Method, MethodType> methods = ContainerBeanDeplyoer.getLifecycleMethodsOfInterface(beanContext);
-
-        deploymentsById.put(beanContext.getDeploymentID(), beanContext);
-        beanContext.setContainer(this);
-        final Data data = new Data(new Index<>(methods));
-        beanContext.setContainerData(data);
-
-        // Create stats interceptor
-        if (StatsInterceptor.isStatsActivated()) {
-            final StatsInterceptor stats = new StatsInterceptor(beanContext.getBeanClass());
-            beanContext.addFirstSystemInterceptor(stats);
-
-            final MBeanServer server = LocalMBeanServer.get();
-
-            final ObjectNameBuilder jmxName = new ObjectNameBuilder("openejb.management");
-            jmxName.set("J2EEServer", "openejb");
-            jmxName.set("J2EEApplication", null);
-            jmxName.set("EJBModule", beanContext.getModuleID());
-            jmxName.set("StatefulSessionBean", beanContext.getEjbName());
-            jmxName.set("j2eeType", "");
-            jmxName.set("name", beanContext.getEjbName());
-
-            // register the invocation stats interceptor
-            try {
-                final ObjectName objectName = jmxName.set("j2eeType", "Invocations").build();
-                if (server.isRegistered(objectName)) {
-                    server.unregisterMBean(objectName);
-                }
-                server.registerMBean(new ManagedMBean(stats), objectName);
-                data.jmxNames.add(objectName);
-            } catch (final Exception e) {
-                logger.error("Unable to register MBean ", e);
-            }
-        }
-
-        try {
-            final Context context = beanContext.getJndiEnc();
-            context.bind("comp/EJBContext", sessionContext);
-        } catch (final NamingException e) {
-            throw new OpenEJBException("Failed to bind EJBContext", e);
-        }
-
-        beanContext.set(EJBContext.class, this.sessionContext);
+    	beanContext.setContainer(this);
+    	containerBeanDeployer.deploy(beanContext, sessionContext);
     }
 
     @Override
     public Object invoke(final Object deployID, InterfaceType type, final Class callInterface, final Method callMethod, final Object[] args, final Object primKey) throws OpenEJBException {
-        final BeanContext beanContext = this.getBeanContext(deployID);
-
-        if (beanContext == null) {
-            throw new OpenEJBException("Deployment does not exist in this container. Deployment(id='" + deployID + "'), Container(id='" + containerID + "')");
-        }
-
-        // Use the backup way to determine call type if null was supplied.
-        if (type == null) {
-            type = beanContext.getInterfaceType(callInterface);
-        }
-
-        final Data data = (Data) beanContext.getContainerData();
-        MethodType methodType = data.getMethodIndex().get(callMethod);
-        methodType = methodType != null ? methodType : MethodType.BUSINESS;
-
+    	final BeanContext beanContext = this.getBeanContext(deployID);
+    	
+	    if (beanContext == null) {
+	        throw new OpenEJBException("Deployment does not exist in this container. Deployment(id='" + deployID + "'), Container(id='" + containerID + "')");
+	    }
+	
+	    final BeanContainerData data = (BeanContainerData) beanContext.getContainerData();
+	    MethodType methodType = data.getMethodIndex().get(callMethod);
+	    methodType = methodType != null ? methodType : MethodType.BUSINESS;
+    	
+    	// Use the backup way to determine call type if null was supplied.
+	    if (type == null) {
+	        type = beanContext.getInterfaceType(callInterface);
+	    }
+	    
         switch (methodType) {
             case CREATE:
                 return createEJBObject(beanContext, callMethod, args, type);
@@ -269,14 +217,14 @@ public class StatefulContainer implements RpcContainer {
         }
     }
 
-    private boolean isPassivable(final BeanContext beanContext) {
+    public boolean isPassivable(final BeanContext beanContext) {
         if (preventExtendedEntityManagerSerialization) {
             return true;
         }
         final Index<EntityManagerFactory, BeanContext.EntityManagerConfiguration> factories = beanContext.getExtendedEntityManagerFactories();
         return !(factories != null && factories.size() > 0) && beanContext.isPassivable();
     }
-
+    
     protected ProxyInfo createEJBObject(final BeanContext beanContext, final Method callMethod, final Object[] args, final InterfaceType interfaceType) throws OpenEJBException {
         // generate a new primary key
         final Object primaryKey = newPrimaryKey();
@@ -1177,31 +1125,6 @@ public class StatefulContainer implements RpcContainer {
         }
     }
 
-    private static final class Data {
+    
 
-        private final Index<Method, MethodType> methodIndex;
-        private final List<ObjectName> jmxNames = new ArrayList<>();
-
-        private Data(final Index<Method, MethodType> methodIndex) {
-            this.methodIndex = methodIndex;
-        }
-
-        public Index<Method, MethodType> getMethodIndex() {
-            return methodIndex;
-        }
-
-    }
-
-    public static class BeanContextFilter implements CacheFilter<Instance>, Serializable {
-        private final String id;
-
-        public BeanContextFilter(final String id) {
-            this.id = id;
-        }
-
-        @Override
-        public boolean matches(final Instance instance) {
-            return instance.beanContext.getId().equals(id);
-        }
-    }
 }
