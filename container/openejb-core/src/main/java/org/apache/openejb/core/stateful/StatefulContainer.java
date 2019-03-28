@@ -38,6 +38,7 @@ import org.apache.openejb.core.interceptor.InterceptorStack;
 import org.apache.openejb.core.security.AbstractSecurityService;
 import org.apache.openejb.core.stateful.Cache.CacheFilter;
 import org.apache.openejb.core.stateful.Cache.CacheListener;
+import org.apache.openejb.core.stateful.BeanContextUtils;
 import org.apache.openejb.core.transaction.BeanTransactionPolicy;
 import org.apache.openejb.core.transaction.BeanTransactionPolicy.SuspendedTransaction;
 import org.apache.openejb.core.transaction.EjbTransactionUtil;
@@ -131,114 +132,7 @@ public class StatefulContainer implements RpcContainer {
         this.lockFactory.setContainer(this);
     }
 
-    private Map<Method, MethodType> getLifecycleMethodsOfInterface(final BeanContext beanContext) {
-        final Map<Method, MethodType> methods = new HashMap<>();
-
-        try {
-            methods.put(BeanContext.Removable.class.getDeclaredMethod("$$remove"), MethodType.REMOVE);
-        } catch (final NoSuchMethodException e) {
-            throw new IllegalStateException("Internal code change: BeanContext.Removable.$$remove() method was deleted", e);
-        }
-
-        final List<Method> removeMethods = beanContext.getRemoveMethods();
-        for (final Method removeMethod : removeMethods) {
-            methods.put(removeMethod, MethodType.REMOVE);
-
-            for (final Class businessLocal : beanContext.getBusinessLocalInterfaces()) {
-                try {
-                    final Method method = businessLocal.getMethod(removeMethod.getName(), removeMethod.getParameterTypes());
-                    methods.put(method, MethodType.REMOVE);
-                } catch (final NoSuchMethodException ignore) {
-                    // no-op
-                }
-            }
-
-            for (final Class businessRemote : beanContext.getBusinessRemoteInterfaces()) {
-                try {
-                    final Method method = businessRemote.getMethod(removeMethod.getName(), removeMethod.getParameterTypes());
-                    methods.put(method, MethodType.REMOVE);
-                } catch (final NoSuchMethodException ignore) {
-                    // no-op
-                }
-            }
-        }
-
-        final Class legacyRemote = beanContext.getRemoteInterface();
-        if (legacyRemote != null) {
-            try {
-                final Method method = legacyRemote.getMethod("remove");
-                methods.put(method, MethodType.REMOVE);
-            } catch (final NoSuchMethodException ignore) {
-                // no-op
-            }
-        }
-
-        final Class legacyLocal = beanContext.getLocalInterface();
-        if (legacyLocal != null) {
-            try {
-                final Method method = legacyLocal.getMethod("remove");
-                methods.put(method, MethodType.REMOVE);
-            } catch (final NoSuchMethodException ignore) {
-                // no-op
-            }
-        }
-
-        final Class businessLocalHomeInterface = beanContext.getBusinessLocalInterface();
-        if (businessLocalHomeInterface != null) {
-            for (final Method method : BeanContext.BusinessLocalHome.class.getMethods()) {
-                if (method.getName().startsWith("create")) {
-                    methods.put(method, MethodType.CREATE);
-                } else if (method.getName().equals("remove")) {
-                    methods.put(method, MethodType.REMOVE);
-                }
-            }
-        }
-
-        final Class businessLocalBeanHomeInterface = beanContext.getBusinessLocalBeanInterface();
-        if (businessLocalBeanHomeInterface != null) {
-            for (final Method method : BeanContext.BusinessLocalBeanHome.class.getMethods()) {
-                if (method.getName().startsWith("create")) {
-                    methods.put(method, MethodType.CREATE);
-                } else if (method.getName().equals("remove")) {
-                    methods.put(method, MethodType.REMOVE);
-                }
-            }
-        }
-
-        final Class businessRemoteHomeInterface = beanContext.getBusinessRemoteInterface();
-        if (businessRemoteHomeInterface != null) {
-            for (final Method method : BeanContext.BusinessRemoteHome.class.getMethods()) {
-                if (method.getName().startsWith("create")) {
-                    methods.put(method, MethodType.CREATE);
-                } else if (method.getName().equals("remove")) {
-                    methods.put(method, MethodType.REMOVE);
-                }
-            }
-        }
-
-        final Class homeInterface = beanContext.getHomeInterface();
-        if (homeInterface != null) {
-            for (final Method method : homeInterface.getMethods()) {
-                if (method.getName().startsWith("create")) {
-                    methods.put(method, MethodType.CREATE);
-                } else if (method.getName().equals("remove")) {
-                    methods.put(method, MethodType.REMOVE);
-                }
-            }
-        }
-
-        final Class localHomeInterface = beanContext.getLocalHomeInterface();
-        if (localHomeInterface != null) {
-            for (final Method method : localHomeInterface.getMethods()) {
-                if (method.getName().startsWith("create")) {
-                    methods.put(method, MethodType.CREATE);
-                } else if (method.getName().equals("remove")) {
-                    methods.put(method, MethodType.REMOVE);
-                }
-            }
-        }
-        return methods;
-    }
+    
 
     public LockFactory getLockFactory() {
         return lockFactory;
@@ -247,12 +141,7 @@ public class StatefulContainer implements RpcContainer {
     public Cache<Object, Instance> getCache() {
         return cache;
     }
-
-    public static enum MethodType {
-        CREATE,
-        REMOVE,
-        BUSINESS
-    }
+    
 
     @Override
     public ContainerType getContainerType() {
@@ -308,7 +197,7 @@ public class StatefulContainer implements RpcContainer {
 
     @Override
     public synchronized void deploy(final BeanContext beanContext) throws OpenEJBException {
-        final Map<Method, MethodType> methods = getLifecycleMethodsOfInterface(beanContext);
+        final Map<Method, MethodType> methods = BeanContextUtils.getLifecycleMethodsOfInterface(beanContext);
 
         deploymentsById.put(beanContext.getDeploymentID(), beanContext);
         beanContext.setContainer(this);
