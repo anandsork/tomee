@@ -38,7 +38,7 @@ import org.apache.openejb.core.interceptor.InterceptorStack;
 import org.apache.openejb.core.security.AbstractSecurityService;
 import org.apache.openejb.core.stateful.Cache.CacheFilter;
 import org.apache.openejb.core.stateful.Cache.CacheListener;
-import org.apache.openejb.core.stateful.BeanContextUtils;
+import org.apache.openejb.core.stateful.ContainerBeanDeplyoer;
 import org.apache.openejb.core.transaction.BeanTransactionPolicy;
 import org.apache.openejb.core.transaction.BeanTransactionPolicy.SuspendedTransaction;
 import org.apache.openejb.core.transaction.EjbTransactionUtil;
@@ -197,7 +197,7 @@ public class StatefulContainer implements RpcContainer {
 
     @Override
     public synchronized void deploy(final BeanContext beanContext) throws OpenEJBException {
-        final Map<Method, MethodType> methods = BeanContextUtils.getLifecycleMethodsOfInterface(beanContext);
+        final Map<Method, MethodType> methods = ContainerBeanDeplyoer.getLifecycleMethodsOfInterface(beanContext);
 
         deploymentsById.put(beanContext.getDeploymentID(), beanContext);
         beanContext.setContainer(this);

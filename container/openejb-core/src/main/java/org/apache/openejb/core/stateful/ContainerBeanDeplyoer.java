@@ -75,7 +75,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 
-public class BeanContextUtils {
+public class ContainerBeanDeplyoer {
 	public static Map<Method, MethodType> getLifecycleMethodsOfInterface(final BeanContext beanContext) {
         final Map<Method, MethodType> methods = new HashMap<>();
 
